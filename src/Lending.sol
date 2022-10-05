@@ -47,9 +47,9 @@ contract Lending is ILending, ERC20("GWLENDING", "GWL"){
     }
 
     function getBalance(address tokenAddress) public returns(uint256 amount){
-        if(keccak256(abi.encodePacked((ERC20(tokenAddress).symbol()))) == keccak256(abi.encodePacked(("ETH"))))
+        if(tokenAddress == ETHER)
             amount = ETHBalance[msg.sender].amount;
-        else if(keccak256(abi.encodePacked((ERC20(tokenAddress).symbol()))) == keccak256(abi.encodePacked(("USDC"))))
+        else if(tokenAddress == USDC)
             amount = USDCBalance[msg.sender].amount;
     }
 
@@ -63,9 +63,9 @@ contract Lending is ILending, ERC20("GWLENDING", "GWL"){
     }
 
     function _setBalance(address tokenAddress, address sender, uint256 amount) internal {
-        if(keccak256(abi.encodePacked((ERC20(tokenAddress).symbol()))) == keccak256(abi.encodePacked(("ETH"))))
+        if(tokenAddress == ETHER)
             ETHBalance[sender] = amountState(amount, block.timestamp);
-        else if(keccak256(abi.encodePacked((ERC20(tokenAddress).symbol()))) == keccak256(abi.encodePacked(("USDC"))))
+        else if(tokenAddress == USDC)
             USDCBalance[sender] = amountState(amount, block.timestamp);
     }
 
@@ -91,12 +91,12 @@ contract Lending is ILending, ERC20("GWLENDING", "GWL"){
     }
 
     function borrow(address tokenAddress, uint256 amount) external{
-        require(keccak256(abi.encodePacked((ERC20(tokenAddress).symbol()))) == keccak256(abi.encodePacked(("ETH"))));
+        require(tokenAddress == ETHER);
         require(amount <= ERC20(ETHER).balanceOf(msg.sender), "InputToken overd own balance");
 
-        amount = amount / DreamOracle(oracle).getPrice(address(ETHER));
+        uint256 _amount = amount / DreamOracle(oracle).getPrice(address(ETHER));
         uint256 etherPrice = DreamOracle(oracle).getPrice(address(USDC));
-        uint256 borrowAmount = (amount * etherPrice) * 5 / 10;
+        uint256 borrowAmount = (_amount * etherPrice) * 5 / 10;
         require(borrowAmount <= USDCTotalSupply, "not enough USDC balance");
 
         ERC20(ETHER)._transfer(msg.sender, address(this), amount);
@@ -110,7 +110,7 @@ contract Lending is ILending, ERC20("GWLENDING", "GWL"){
     }
 
     function repay(address tokenAddress, uint256 amount) external{
-        require(keccak256(abi.encodePacked((ERC20(tokenAddress).symbol()))) == keccak256(abi.encodePacked(("USDC"))));
+        require(tokenAddress == USDC);
         require(amount <= ERC20(USDC).balanceOf(msg.sender), "InputToken overd own balance");
 
         (uint256 fee, uint256 blockTimestemp) = countFee(USDCLoan[msg.sender].welfare, USDCLoan[msg.sender].borrowTime);
@@ -130,7 +130,7 @@ contract Lending is ILending, ERC20("GWLENDING", "GWL"){
         _setTotalSupply();
     }
     function liquidate(address user, address tokenAddress, uint256 amount) external{
-        require(keccak256(abi.encodePacked((ERC20(tokenAddress).symbol()))) == keccak256(abi.encodePacked(("USDC"))));
+        require(tokenAddress == USDC);
         require(amount <= ERC20(USDC).balanceOf(msg.sender), "InputToken overd own balance");
         require(USDCLoan[user].principal > 0, "request user doesn't have any loan");
 
@@ -167,14 +167,14 @@ contract Lending is ILending, ERC20("GWLENDING", "GWL"){
     }
 
     function withdraw(address tokenAddress, uint256 amount) external{
-        if(keccak256(abi.encodePacked((ERC20(tokenAddress).symbol()))) == keccak256(abi.encodePacked(("ETH")))){
+        if(tokenAddress == ETHER){
             (uint256 fee, uint256 blockTimestemp) = countFee(ETHBalance[msg.sender].amount, ETHBalance[msg.sender].borrowTime);
             ETHBalance[msg.sender].amount += fee;
             ETHBalance[msg.sender].borrowTime = blockTimestemp;
 
             require(amount <= ETHBalance[msg.sender].amount, "InputToken overd own balance");
-            ETHBalance[msg.sender].amount -= amount;}
-        else if(keccak256(abi.encodePacked((ERC20(tokenAddress).symbol()))) == keccak256(abi.encodePacked(("USDC")))){
+            ETHBalance[msg.sender].amount -= amount;
+        }else if(tokenAddress == USDC){
             (uint256 fee, uint256 blockTimestemp) = countFee(USDCBalance[msg.sender].amount, USDCBalance[msg.sender].borrowTime);
             USDCBalance[msg.sender].amount += fee;
             USDCBalance[msg.sender].borrowTime = blockTimestemp;

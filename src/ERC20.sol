@@ -47,7 +47,7 @@ contract ERC20{
         address from,
         address to,
         uint256 amount
-    ) public {
+    ) internal {
         require(from != address(0), "ERC20: transfer from the zero address");
         require(to != address(0), "ERC20: transfer to the zero address");
 
@@ -61,6 +61,31 @@ contract ERC20{
         }
 
         emit Transfer(from, to, amount);
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public returns (bool) {
+        address spender = _msgSender();
+        _spendAllowance(from, spender, amount);
+        _transfer(from, to, amount);
+        return true;
+    }
+
+    function _spendAllowance(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal {
+        uint256 currentAllowance = allowance(owner, spender);
+        if (currentAllowance != type(uint256).max) {
+            require(currentAllowance >= amount, "ERC20: insufficient allowance");
+            unchecked {
+                _approve(owner, spender, currentAllowance - amount);
+            }
+        }
     }
 
     function allowance(address owner, address spender) public view returns (uint256) {

@@ -51,6 +51,16 @@ contract lending is Test {
         vm.expectRevert("not enough USDC balance");
     }
 
+    function testSimpleBorrow() public{
+        lending.deposit(address(USDOLLAR), 500 ether);
+
+        address actor1 = address(0xaa);
+        ETHER.mint(address(actor1), 1 ether);
+        vm.prank(address(0xaa));
+        lending.borrow(address(ETHER), 1 ether);
+        // require(lending.getLoanState(address(actor1)) == 2 ether);
+    }
+
     function testSimpleRepay() public{
         lending.deposit(address(USDOLLAR), 500 ether);
 
