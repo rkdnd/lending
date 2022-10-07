@@ -6,6 +6,8 @@ pragma solidity ^0.8.13;
 
 import "./ERC20.sol";
 import "./DreamOracle.sol";
+import "./dpsToken.sol";
+import "./debtToken.sol";
 
 interface ILending{
     function deposit(address tokenAddress, uint256 amount) external;
@@ -16,139 +18,107 @@ interface ILending{
 }
 
 contract Lending is ILending, ERC20("GWLENDING", "GWL"){
-    address oracle;
     address ETHER;
     address USDC;
-
-    uint256 public ETHTotalSupply;
-    uint256 public USDCTotalSupply;
+    dpsToken dpseth;
+    dpsToken dpsusdc;
+    debtToken debtusdc;
+    address oracle;
 
     mapping(uint256 => address[]) borrowerMarketPrice;
     address[] FCLiquidationList;
     uint256[] marketPriceList;
 
-    mapping(address => amountState) internal ETHBalance;
-    mapping(address => amountState) internal USDCBalance;
-    mapping(address => loanState) internal USDCLoan;
-    struct amountState{
-        uint256 amount;
-        uint256 borrowTime;
-    }
-    struct loanState{
-        uint256 principal;
-        uint256 welfare;
-        uint256 borrowTime;
-    }
-
     constructor(address _eth, address _usdc, address _oracle){
         ETHER = _eth;
         USDC = _usdc;
+
+        dpseth = new dpsToken("deposited ETHER", "dpsETH");
+        dpsusdc = new dpsToken("deposited USDC", "dpsUSDC");
+        debtusdc = new debtToken("deptUSDC", "debtUSDC");
+
         oracle = _oracle;
     }
 
-    function getBalance(address tokenAddress) public returns(uint256 amount){
-        if(tokenAddress == ETHER)
-            amount = ETHBalance[msg.sender].amount;
-        else if(tokenAddress == USDC)
-            amount = USDCBalance[msg.sender].amount;
-    }
+    function deposit(address tokenAddress, uint256 amount) external payable{
+        require(tokenAddress == address(0) || tokenAddress == USDC);
 
-    function getLoanState(address user) public returns(uint256 amount){
-        amount = USDCLoan[user].welfare;
-    }
-
-    function _setTotalSupply() internal {
-        ETHTotalSupply = ERC20(ETHER).balanceOf(address(this));
-        USDCTotalSupply = ERC20(USDC).balanceOf(address(this));
-    }
-
-    function _setBalance(address tokenAddress, address sender, uint256 amount) internal {
-        if(tokenAddress == ETHER)
-            ETHBalance[sender] = amountState(amount, block.timestamp);
-        else if(tokenAddress == USDC)
-            USDCBalance[sender] = amountState(amount, block.timestamp);
-    }
-
-    function countFee(uint256 amount, uint256 timestemp) internal returns (uint256 fee, uint256 blockTimestemp){
-        blockTimestemp = block.timestamp;
-        uint256 dayCount = (blockTimestemp - timestemp) / 24 hours;
-        uint256 remainDayCount = (blockTimestemp - timestemp) % 24 hours;
-        uint256 beforeCal = amount;
-
-        for(uint256 i = 0; i < dayCount; i++){
-            amount += amount / 10;
+        if(tokenAddress == address(0)){
+            require(msg.value == amount);
+            dpsToken(dpseth).mint(msg.sender, amount);
+        }else{
+            ERC20(tokenAddress).transferFrom(msg.sender, address(this), amount);
+            dpsToken(dpsusdc).mint(msg.sender, amount);
         }
-        blockTimestemp += remainDayCount;
-        fee = amount - beforeCal;
     }
+    
+    function withdraw1(address tokenAddress, uint256 amount) external{
+        require(tokenAddress == address(0) || tokenAddress == USDC);
 
-    function deposit(address tokenAddress, uint256 amount) override public{
-        require(amount <= ERC20(tokenAddress).balanceOf(msg.sender), "InputToken overd own balance");
-        ERC20(tokenAddress)._transfer(msg.sender, address(this), amount);
+        if(tokenAddress == address(0)){
+            dpsToken(dpseth).updateInterest(msg.sender);
 
-        _setBalance(tokenAddress, msg.sender, amount);
-        _setTotalSupply();
+            require(dpsToken(dpseth).balanceOf(msg.sender) >= amount);
+            payable(msg.sender).transfer(amount);
+            dpsToken(dpseth).burn(msg.sender, amount);
+        }else{
+            dpsToken(dpsusdc).updateInterest(msg.sender);
+            
+            require(dpsToken(dpseth).balanceOf(msg.sender) >= amount);
+            ERC20(tokenAddress).transfer(msg.sender, amount);
+            dpsToken(dpsusdc).burn(msg.sender, amount);
+        }
     }
 
     function borrow(address tokenAddress, uint256 amount) external{
-        require(tokenAddress == ETHER);
-        require(amount <= ERC20(ETHER).balanceOf(msg.sender), "InputToken overd own balance");
-
-        uint256 _amount = amount / DreamOracle(oracle).getPrice(address(ETHER));
-        uint256 etherPrice = DreamOracle(oracle).getPrice(address(USDC));
-        uint256 borrowAmount = (_amount * etherPrice) * 5 / 10;
-        require(borrowAmount <= USDCTotalSupply, "not enough USDC balance");
-
-        ERC20(ETHER)._transfer(msg.sender, address(this), amount);
-        USDCLoan[msg.sender] = loanState(amount, borrowAmount, block.timestamp);
-        ERC20(USDC)._transfer(address(this), msg.sender, borrowAmount);
+        require(tokenAddress == USDC);
         
-        borrowerMarketPrice[etherPrice].push(msg.sender);
-        marketPriceList.push(etherPrice);
-        marketPriceList = sort(marketPriceList);
-        _setTotalSupply();
+        uint256 usdcPrice = DreamOracle(oracle).getPrice(address(USDC));
+        uint256 etherPrice = DreamOracle(oracle).getPrice(address(ETHER));
+        uint256 depositedBalance = dpsToken(dpseth).balanceOf(msg.sender);
+        uint256 maxLTV = ((usdcPrice / etherPrice) * depositedBalance) / 2;
+        require(maxLTV >= amount + debtToken(debtusdc).balanceOf(msg.sender));
+
+        dpsToken(dpseth).burn(msg.sender, (amount * 2));
+
+        debtToken(debtusdc).mint(msg.sender, amount);
+        ERC20(tokenAddress).transfer(msg.sender, amount);
     }
 
     function repay(address tokenAddress, uint256 amount) external{
         require(tokenAddress == USDC);
-        require(amount <= ERC20(USDC).balanceOf(msg.sender), "InputToken overd own balance");
+        uint256 clientLoan = debtToken(debtusdc).balanceOf(msg.sender);
 
-        (uint256 fee, uint256 blockTimestemp) = countFee(USDCLoan[msg.sender].welfare, USDCLoan[msg.sender].borrowTime);
-        USDCLoan[msg.sender].welfare += fee;
-        USDCLoan[msg.sender].borrowTime = blockTimestemp;
-
-        if(USDCLoan[msg.sender].welfare > amount){
-            USDCLoan[msg.sender].welfare -= amount;
-            ERC20(USDC)._transfer(msg.sender, address(this), amount);
+        debtToken(debtusdc).updateInterest(msg.sender);
+        if(clientLoan > amount){
+            ERC20(USDC).transferFrom(msg.sender, address(this), amount);
+            debtToken(debtusdc).burn(msg.sender, amount);
         }else{
-            ERC20(USDC)._transfer(msg.sender, address(this), USDCLoan[msg.sender].welfare);
-            ERC20(ETHER)._transfer(address(this), msg.sender, USDCLoan[msg.sender].principal);
-            USDCLoan[msg.sender].welfare = 0;
-            USDCLoan[msg.sender].principal = 0;
+            ERC20(USDC).transferFrom(msg.sender, address(this), clientLoan);
+            debtToken(debtusdc).burn(msg.sender, clientLoan);
+            dpsToken(dpseth).clearLoan();
         }
-
-        _setTotalSupply();
     }
-    function liquidate(address user, address tokenAddress, uint256 amount) external{
-        require(tokenAddress == USDC);
-        require(amount <= ERC20(USDC).balanceOf(msg.sender), "InputToken overd own balance");
-        require(USDCLoan[user].principal > 0, "request user doesn't have any loan");
+    // function liquidate(address user, address tokenAddress, uint256 amount) external{
+    //     require(tokenAddress == USDC);
+    //     require(amount <= ERC20(USDC).balanceOf(msg.sender), "InputToken overd own balance");
+    //     require(USDCLoan[user].principal > 0, "request user doesn't have any loan");
 
-        require(FCLiquiExistCheck(user) == true);
+    //     require(FCLiquiExistCheck(user) == true);
 
-        (uint256 fee, uint256 blockTimestemp) = countFee(USDCLoan[user].welfare, USDCLoan[user].borrowTime);
-        USDCLoan[user].welfare += fee;
-        USDCLoan[user].borrowTime = blockTimestemp;
+    //     (uint256 fee, uint256 blockTimestemp) = countFee(USDCLoan[user].welfare, USDCLoan[user].borrowTime);
+    //     USDCLoan[user].welfare += fee;
+    //     USDCLoan[user].borrowTime = blockTimestemp;
 
-        require(amount >= USDCLoan[user].principal);
-        ERC20(USDC)._transfer(msg.sender, address(this), USDCLoan[user].principal);
-        ERC20(ETHER)._transfer(address(this), msg.sender, USDCLoan[user].principal);
-        USDCLoan[user].welfare = 0;
-        USDCLoan[user].principal = 0;
-        delete FCLiquidationList[findArray(user)];
+    //     require(amount >= USDCLoan[user].principal);
+    //     ERC20(USDC)._transfer(msg.sender, address(this), USDCLoan[user].principal);
+    //     ERC20(ETHER)._transfer(address(this), msg.sender, USDCLoan[user].principal);
+    //     USDCLoan[user].welfare = 0;
+    //     USDCLoan[user].principal = 0;
+    //     delete FCLiquidationList[findArray(user)];
 
-        _setTotalSupply();
-    }
+    //     _setTotalSupply();
+    // }
 
     function updateFCLiquidationList() internal{
         uint256 etherPrice = DreamOracle(oracle).getPrice(address(USDC));
@@ -166,26 +136,6 @@ contract Lending is ILending, ERC20("GWLENDING", "GWL"){
         list= FCLiquidationList;
     }
 
-    function withdraw(address tokenAddress, uint256 amount) external{
-        if(tokenAddress == ETHER){
-            (uint256 fee, uint256 blockTimestemp) = countFee(ETHBalance[msg.sender].amount, ETHBalance[msg.sender].borrowTime);
-            ETHBalance[msg.sender].amount += fee;
-            ETHBalance[msg.sender].borrowTime = blockTimestemp;
-
-            require(amount <= ETHBalance[msg.sender].amount, "InputToken overd own balance");
-            ETHBalance[msg.sender].amount -= amount;
-        }else if(tokenAddress == USDC){
-            (uint256 fee, uint256 blockTimestemp) = countFee(USDCBalance[msg.sender].amount, USDCBalance[msg.sender].borrowTime);
-            USDCBalance[msg.sender].amount += fee;
-            USDCBalance[msg.sender].borrowTime = blockTimestemp;
-
-            require(amount <= USDCBalance[msg.sender].amount, "InputToken overd own balance");
-            USDCBalance[msg.sender].amount -= amount;}
-
-
-        ERC20(tokenAddress)._transfer(address(this), msg.sender, (amount));
-        _setTotalSupply();
-    }
 
     function quickSort(uint[] memory arr, int left, int right) internal pure {
         int i = left;
